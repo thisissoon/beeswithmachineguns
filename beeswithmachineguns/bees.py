@@ -24,12 +24,26 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from multiprocessing import Pool
+# Standard Libs
+import base64
+import csv
 import os
+import random
 import re
 import socket
-import time
+import ssl
 import sys
+import time
+import traceback
+from contextlib import contextmanager
+from multiprocessing import Pool
+
+# Third Party Libs
+import boto.ec2
+import boto.exception
+import paramiko
+
+
 IS_PY2 = sys.version_info.major == 2
 if IS_PY2:
     from urllib2 import urlopen, Request
@@ -37,16 +51,7 @@ if IS_PY2:
 else:
     from urllib.request import urlopen, Request
     from io import StringIO
-import base64
-import csv
-import random
-import ssl
-from contextlib import contextmanager
-import traceback
 
-import boto.ec2
-import boto.exception
-import paramiko
 
 STATE_FILENAME = os.path.expanduser('~/.bees')
 
@@ -101,13 +106,10 @@ def _get_security_group_ids(connection, security_group_names, subnet):
     for group in security_groups:
         for name in security_group_names:
             if group.name == name:
-                if subnet == None:
-                    if group.vpc_id == None:
-                        ids.append(group.id)
-                    elif group.vpc_id != None:
-                        ids.append(group.id)
+                if subnet is not None:
+                    ids.append(group.id)
 
-        return ids
+    return ids
 
 # Methods
 
@@ -159,6 +161,12 @@ def up(count, group, zone, image_id, instance_type, username, key_name, subnet, 
     if ec2_connection == None:
         raise Exception("Invalid zone specified? Unable to connect to region using zone name")
 
+    kwargs = {}
+    if subnet is None:
+        kwargs['security_groups'] = [group]
+    else:
+        kwargs['security_group_ids'] = _get_security_group_ids(ec2_connection, [group], subnet)
+
     if bid:
         print('Attempting to call up %i spot bees, this can take a while...' % count)
 
@@ -167,10 +175,10 @@ def up(count, group, zone, image_id, instance_type, username, key_name, subnet, 
             price=bid,
             count=count,
             key_name=key_name,
-            security_groups=[group] if subnet is None else _get_security_group_ids(ec2_connection, [group], subnet),
             instance_type=instance_type,
             placement=None if 'gov' in zone else zone,
-            subnet_id=subnet)
+            subnet_id=subnet,
+            **kwargs)
 
         # it can take a few seconds before the spot requests are fully processed
         time.sleep(5)
@@ -185,10 +193,10 @@ def up(count, group, zone, image_id, instance_type, username, key_name, subnet, 
                 min_count=count,
                 max_count=count,
                 key_name=key_name,
-                security_groups=[group] if subnet is None else _get_security_group_ids(ec2_connection, [group], subnet),
                 instance_type=instance_type,
                 placement=None if 'gov' in zone else zone,
-                subnet_id=subnet)
+                subnet_id=subnet,
+                **kwargs)
         except boto.exception.EC2ResponseError as e:
             print("Unable to call bees:", e.message)
             return e
